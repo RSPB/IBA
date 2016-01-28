@@ -1,171 +1,109 @@
-// Quantification of forest loss in Important Bird Areas from Global Forest Change map
+/* Pattern s of twenty-ﬁrst century forest loss across a globalnetwork of important sites for biodiversity */
 
-var IBA_collection = ee.FeatureCollection('ft:15rF8XpX24OYIJmPUD25F8ykQfsPEkntf7yuHs8_3');
-var IBA_list = IBA_collection.toList(1e6).getInfo();
+// Google Earth Engine link: https://code.earthengine.google.com/a950bf782e39bd665812e20dd190d6c6
 
-// Calculate forest extent
+/* INPUT:
+IBA_collection - fusion table with a list of links to fusion tables containing 
+                 Important Bird Areas (IBA) polygons.
 
+We are working with a list of IBA (rather than a single one, which would make code simpler)
+since at the moment of witing the script below Google Earth Engine and Fusion Tables were
+not able to handle such large polygons at high resolution (scale of order of 30m).
+*/
+var IBA_collection = ee.FeatureCollection('ft:15rF8XpX24OYIJmPUD25F8ykQfsPEkntf7yuHs8_3'); 
+var IBA_list = IBA_collection.toList(1e6).getInfo(); // make a list of all links 
+
+/* Global Forest Change (GFC) map from Hansen et al. (2013)
+   Can be replaced with updates version of GFC:
+   - UMD/hansen/global_forest_change_2014
+   - UMD/hansen/global_forest_change_2015 */
 var gfcImage = ee.Image('UMD/hansen/global_forest_change_2013');
 
-// Calculations of forest extent for all species in year 2000
-var forest2000 = gfcImage.select('treecover2000').divide(100);
-var areaImage2000 = forest2000.multiply(ee.Image.pixelArea());
-var lossImage = gfcImage.select('loss');
+// GFC bands are explained here: 
+// https://sites.google.com/site/earthengineapidocs/tutorials/global-forest-change-tutorial/reference-guide
+var forest2000 = gfcImage.select('treecover2000').divide(100); // Forest cover in 2000 as a fraction
+var areaImage2000 = forest2000.multiply(ee.Image.pixelArea()); // Forest cover area in 2000 in m^2
+var lossImage = gfcImage.select('loss'); // select loss band
 var lossYear = gfcImage.select('lossyear'); 
 var gainImage = gfcImage.select('gain');
-var totalLoss2012 = lossImage.multiply(ee.Image.pixelArea());
+var totalLoss2012 = lossImage.multiply(ee.Image.pixelArea()); 
 
+// Get all pixels from 2000 where loss occured. 
+// If pixel had 70% forest cover in 2000 we assume that 70% was lost in 200
 var maskLossArea = forest2000.mask(lossImage).multiply(ee.Image.pixelArea());
+
+// Most pessimistic approach - always assume 100% forest loss.
 var lossImageArea = lossImage.multiply(ee.Image.pixelArea());
 
-var gainAndLoss = gainImage.and(lossImage);
-var gainOnly = gainImage.and(gainAndLoss.not());
+// Find gain-only pixels. Reasoning is that if both loss and gain occurs it's
+// probably not suitable habitat
+var gainOnly = gainImage.and(lossImage.not());
 var gainOnlyArea = gainOnly.multiply(ee.Image.pixelArea());
 
-// Get loss images for subsequent years
-var lossYearArea2001 = forest2000.mask(lossYear.eq(1)).multiply(ee.Image.pixelArea());
-var lossYearArea2002 = forest2000.mask(lossYear.eq(2)).multiply(ee.Image.pixelArea());
-var lossYearArea2003 = forest2000.mask(lossYear.eq(3)).multiply(ee.Image.pixelArea());
-var lossYearArea2004 = forest2000.mask(lossYear.eq(4)).multiply(ee.Image.pixelArea());
-var lossYearArea2005 = forest2000.mask(lossYear.eq(5)).multiply(ee.Image.pixelArea()); 
-var lossYearArea2006 = forest2000.mask(lossYear.eq(6)).multiply(ee.Image.pixelArea());
-var lossYearArea2007 = forest2000.mask(lossYear.eq(7)).multiply(ee.Image.pixelArea());
-var lossYearArea2008 = forest2000.mask(lossYear.eq(8)).multiply(ee.Image.pixelArea());
-var lossYearArea2009 = forest2000.mask(lossYear.eq(9)).multiply(ee.Image.pixelArea());
-var lossYearArea2010 = forest2000.mask(lossYear.eq(10)).multiply(ee.Image.pixelArea());
-var lossYearArea2011 = forest2000.mask(lossYear.eq(11)).multiply(ee.Image.pixelArea());
-var lossYearArea2012 = forest2000.mask(lossYear.eq(12)).multiply(ee.Image.pixelArea());
+/* We create an array in which we will store the following sequence:
+- First element - Name, e.g. 'Tree area 2000'.
+- Second element - Name of a band as it appears on GFC. Needed to retrieve results.
+- Third element - The image itself. */
+var areas = [];
+areas.push(['Tree area 2000', 'treecover2000', areaImage2000]);
+areas.push(['Forest loss 2001 - 2012', 'treecover2000', maskLossArea]);
+areas.push(['Forest loss 2001 - 2012 pessimistic', 'loss', lossImageArea]);
+areas.push(['Gain forest', 'gain', gainOnlyArea]);
 
-var scale = 100;
-var maxPixels = 1e12;
-var reducer = ee.Reducer.sum();
+for (var year = 1; year <= 12; year += 1)
+{
+  areas.push(['Loss area 200' + year.toString(), 
+              'treecover2000',
+              forest2000.mask(lossYear.eq(year)).multiply(ee.Image.pixelArea())]);
+}
 
+// 'Selectors' are a way of informing GEE which data we want exported. If none are specified 
+// complete data set is exported, together with columns which are not relevant.
+var selectors = [];
+for (var idx = 0; idx < areas.length; idx += 1)
+{
+  selectors.push(areas[idx][0]);
+}
+selectors.push('OBJECTID_1', 'IntName', 'NatName', 'SitRecID');
+
+var scale = 120; // Scale at which calculations should be run. GFC is 30m
+var maxPixels = 1e12; // 10^12 - above that number of pixels GEE will use bestEffort flag
+var bestEffort = false; // Change scale if too many pixels. Unlikely in this case.
+var reducer = ee.Reducer.sum(); // This reducer will sum up all pixels
+
+// For every fusion table with IBA ...
 IBA_list.map(function f(IBA)
 {
+  // Get fusion table ID...
   var fusionTableID = 'ft:' + IBA.properties.table_id;
+  // Get geometries from it...
   var collection = ee.FeatureCollection(fusionTableID, 'geometry');
   
-  var allAreas2000 = collection.map(function f(e) { 
-    return e.set("Tree area 2000", 
-      ee.Number(areaImage2000.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Forest loss 2001 - 2012", 
-      ee.Number(maskLossArea.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Forest loss 2001 - 2012 pessimistic", 
-      ee.Number(lossImageArea.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('loss')).divide(1e6))    
-    .set("Loss 2001", 
-      ee.Number(lossYearArea2001.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2002", 
-      ee.Number(lossYearArea2002.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2003", 
-      ee.Number(lossYearArea2003.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2004", 
-      ee.Number(lossYearArea2004.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2005", 
-      ee.Number(lossYearArea2005.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2006", 
-      ee.Number(lossYearArea2006.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2007", 
-      ee.Number(lossYearArea2007.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2008", 
-      ee.Number(lossYearArea2008.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2009", 
-      ee.Number(lossYearArea2009.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2010", 
-      ee.Number(lossYearArea2010.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2011", 
-      ee.Number(lossYearArea2011.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Loss 2012", 
-      ee.Number(lossYearArea2012.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('treecover2000')).divide(1e6))
-    .set("Gain forest", 
-      ee.Number(gainOnlyArea.reduceRegion({
-        reducer: reducer,
-        scale: scale,
-        maxPixels: maxPixels,
-        geometry : e.geometry()  
-      }).get('gain')).divide(1e6)); 
+  // For every such geometry...
+  var areasComputeObject = collection.map(function f(e) { 
+    // Go through each metric we pushed to the 'areas' array...
+    for (var idx = 0; idx < areas.length; idx++)
+    {
+      e=e.set(areas[idx][0], // Name of the metric (e.g. Tree area 2000)
+        ee.Number(areas[idx][2].reduceRegion({ // [2] is the image itself - perform 'reduce' on it
+          reducer: reducer, // our reducer will sum all pixels
+          scale: scale, // at this scale
+          maxPixels: maxPixels,
+          geometry : e.geometry(),
+          bestEffort: bestEffort
+        }).get(areas[idx][1])).divide(1e6)); // [1] is name from GFC. We divide by 1000^2 to get km^2
+    }
+    return e;
   });
   
   var filenamePrefix = 'IBA_' + IBA.properties.table_id;
-  var selectors = "OBJECTID_1,IntName,NatName,SitRecID,Tree area 2000,Forest loss 2001 - 2012,Forest loss 2001 - 2012 pessimistic,Loss 2001,Loss 2002,Loss 2003,Loss 2004,Loss 2005,Loss 2006,Loss 2007,Loss 2008,Loss 2009,Loss 2010,Loss 2011,Loss 2012,Gain forest"; 
-
-  allAreas2000 = allAreas2000.select(selectors.split(','), null, false);
   
+  // We select subset of available columns. "false" indicate that geometry should not be exported.
+  areasComputeObject = areasComputeObject.select(selectors, null, false);
+  
+  // "Export" will create an export task. No calculations are fired until one presses a button.
+  // Since it is a loop a number of export tasks is created.
   var taskParams = { 'driveFolder' : '', 'fileFormat' : 'CSV' };
-  Export.table(allAreas2000, filenamePrefix, taskParams);
+  Export.table(areasComputeObject, filenamePrefix, taskParams);
 
 });
