@@ -29,7 +29,7 @@ var gainImage = gfcImage.select('gain');
 var totalLoss2012 = lossImage.multiply(ee.Image.pixelArea()); 
 
 // Get all pixels from 2000 where loss occured. 
-// If pixel had 70% forest cover in 2000 we assume that 70% was lost in 200
+// If pixel had 70% forest cover in 2000 we assume that 70% was lost in 2012
 var maskLossArea = forest2000.mask(lossImage).multiply(ee.Image.pixelArea());
 
 // Most pessimistic approach - always assume 100% forest loss.
