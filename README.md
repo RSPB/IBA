@@ -2,7 +2,7 @@
 Quantification of forest loss in Important Bird Areas from Global Forest Change map
 
 # IBA repository 
-The repository aims at calculation of forest cover, gain and loss in Important Bird Areas using Global Forest Change map and Google Earth Engine (GEE), a cloud computing platform dedicated to geo-spatial analysis. 
+The repository aims at calculation of forest cover, gain and loss in Important Bird Areas using Global Forest Change map and Google Earth Engine (GEE), a cloud computing platform dedicated to geo-spatial analysis. The provided code has been used to generate data for the paper published in Remote Sensing and Conservation journal: [Patterns of twenty-first century forest loss across a global network of important sites for biodiversity](http://onlinelibrary.wiley.com/doi/10.1002/rse2.13/abstract).
 
 ## Contents
   - [Overview](#overview)
